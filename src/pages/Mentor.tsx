@@ -17,6 +17,7 @@ export default function Mentor() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [draft, setDraft] = useState('')
   const [loading, setLoading] = useState(true)
+  const [sending, setSending] = useState(false)
   const [error, setError] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
   const project = projects.find(item => item.id === projectId) ?? null
@@ -32,19 +33,51 @@ export default function Mentor() {
   useEffect(() => {
     let cancelled = false
     setRun(null)
-    setMessages(project ? [newMessage('mentor', `Hi! I’m your project mentor for “${project.title}”. Ask me about your project idea, timeline, technology, or how to break down the next step.`)] : [])
-    if (project?.latestRunId) api.getPipelineRun(project.latestRunId).then(value => { if (!cancelled) setRun(value) }).catch(() => {})
+    setError('')
+    if (!project) {
+      setMessages([])
+      return () => { cancelled = true }
+    }
+
+    // Load chat history and pipeline run
+    setLoading(true)
+    Promise.all([
+      api.getMentorMessages(project.id).catch(() => []),
+      project.latestRunId ? api.getPipelineRun(project.latestRunId).catch(() => null) : Promise.resolve(null)
+    ]).then(([history, runValue]) => {
+      if (cancelled) return
+      setRun(runValue)
+      if (history.length > 0) {
+        setMessages(history.map(m => ({ id: m.id, role: m.role, text: m.text, createdAt: m.createdAt })))
+      } else {
+        const welcome = newMessage('mentor', `Hi! I’m your project mentor for “${project.title}”. Ask me about your project idea, timeline, technology, or how to break down the next step.`)
+        setMessages([welcome])
+      }
+    }).catch(e => {
+      if (!cancelled) setError(errorMessage(e))
+    }).finally(() => {
+      if (!cancelled) setLoading(false)
+    })
+
     return () => { cancelled = true }
   }, [projectId])
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [messages])
 
-  const reply = (question: string) => makeMentorReply(question, project!, run)
-  const send = (text: string) => {
+  const send = async (text: string) => {
     const question = text.trim()
-    if (!question || !project) return
-    setMessages(current => [...current, newMessage('student', question), newMessage('mentor', reply(question))])
-    setDraft('')
+    if (!question || !project || sending) return
+    setSending(true)
+    setError('')
+    try {
+      const res = await api.sendMentorMessage(project.id, question)
+      setMessages(current => [...current, { id: res.studentMessage.id, role: res.studentMessage.role, text: res.studentMessage.text, createdAt: res.studentMessage.createdAt }, { id: res.mentorReply.id, role: res.mentorReply.role, text: res.mentorReply.text, createdAt: res.mentorReply.createdAt }])
+      setDraft('')
+    } catch (e) {
+      setError(errorMessage(e))
+    } finally {
+      setSending(false)
+    }
   }
   const submit = (event: FormEvent) => { event.preventDefault(); send(draft) }
 
@@ -78,11 +111,12 @@ export default function Mentor() {
         </article>)}
         <div ref={bottomRef} />
       </div>
-      <div className="mentor-quick-prompts"><span>TRY ASKING</span>{prompts.map(prompt => <button type="button" key={prompt} onClick={() => send(prompt)}><Lightbulb size={13} /> {prompt}</button>)}</div>
+      <div className="mentor-quick-prompts"><span>TRY ASKING</span>{prompts.map(prompt => <button type="button" key={prompt} onClick={() => send(prompt)} disabled={sending}><Lightbulb size={13} /> {prompt}</button>)}</div>
       <form className="mentor-composer" onSubmit={submit}>
         <label className="visually-hidden" htmlFor="mentor-question">Ask about your project</label>
-        <textarea id="mentor-question" rows={1} maxLength={500} value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(draft) } }} placeholder="Ask anything about your project…" />
-        <button className="button button-primary" type="submit" disabled={!draft.trim()} aria-label="Send message"><Send size={16} /></button>
+        <textarea id="mentor-question" rows={1} maxLength={500} value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(draft) } }} placeholder="Ask anything about your project…" disabled={sending} />
+        {sending && <p className="mentor-sending"><LoaderCircle size={14} className="spin" /> Sending…</p>}
+        <button className="button button-primary" type="submit" disabled={!draft.trim() || sending} aria-label="Send message">{sending ? <LoaderCircle size={16} className="spin" /> : <Send size={16} />}</button>
       </form>
       <p className="mentor-demo-note"><ShieldCheck size={14} /> This no-cost demo mentor uses your saved blueprint and fixed guidance rules. It doesn’t send messages to an AI service.</p>
     </div>
@@ -90,26 +124,3 @@ export default function Mentor() {
   </section>
 }
 
-function makeMentorReply(question: string, project: ProjectIdea, run: PipelineRun | null) {
-  const text = question.toLowerCase()
-  const results = run?.results
-  if (!results) return `Let’s make “${project.title}” manageable. Start by writing down one user, the problem they face, and the smallest feature that would help. Your current idea is: ${project.description}`
-  if (/test|testing|validat/.test(text)) {
-    const checkpoint = results.plan.milestones.find(milestone => milestone.testingCheckpoint)?.testingCheckpoint
-    return checkpoint ? `A useful first check is: ${checkpoint} For “${project.title}”, test this with someone who represents your target user and record what they can complete without help.` : `Start with one end-to-end test of the main user journey for “${project.title}”. Write down what should happen, try it with a classmate, and note where they get stuck.`
-  }
-  if (/tech|stack|language|database|framework/.test(text)) {
-    const stack = results.scopeAndStack.techStack.slice(0, 3).map(item => `${item.layer}: ${item.choice}`).join('; ')
-    return `Your blueprint recommends ${stack}. Start with the simplest part you can run locally, then connect the pieces one at a time. The report explains why each choice fits.`
-  }
-  if (/risk|block|problem|stuck/.test(text)) {
-    const risk = results.risk.risks[0]
-    return risk ? `One risk to plan for is ${risk.title.toLowerCase()}. ${risk.mitigation} Keep a smaller fallback version of your core feature ready.` : `Break the blocker into a small question you can answer in one work session. Protect the core feature first, then move optional work later.`
-  }
-  if (/first|next|milestone|week|timeline|start/.test(text)) {
-    const milestone = results.plan.milestones.find(item => item.status !== 'done') ?? results.plan.milestones[0]
-    return milestone ? `Your next milestone is Week ${milestone.week}: ${milestone.title}. Begin with ${milestone.tasks[0]?.toLowerCase() ?? 'the first task in your plan'}. Aim to finish its deliverable: ${milestone.deliverables[0]}.` : `Your milestones are marked complete. Review your final deliverables and ask a student or mentor to try the main project flow.`
-  }
-  if (/scope|mvp|feature/.test(text)) return `Keep the first version focused on these blueprint items: ${results.scopeAndStack.mvp.slice(0, 3).join('; ')}. Save the future-expansion features until the core flow works.`
-  return `For “${project.title}”, focus on one small outcome this week: ${results.plan.milestones.find(item => item.status !== 'done')?.title ?? results.scopeAndStack.mvp[0]}. What part feels least clear right now?`
-}

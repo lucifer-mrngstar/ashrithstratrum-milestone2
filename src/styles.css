@@ -147,14 +147,14 @@ main:focus { outline: none; }
 /* ───────────────────────── Navbar ───────────────────────── */
 .navbar { position: sticky; top: 0; z-index: 20; height: 68px; background: var(--nav-bg); border-bottom: 1px solid var(--border); backdrop-filter: blur(16px) saturate(1.2); }
 .nav-inner { height: 100%; width: min(calc(var(--content-width) + 40px), calc(100% - 48px)); margin: auto; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
-.brand { display: inline-flex; align-items: center; gap: 10px; font-family: "Manrope", var(--font-heading); white-space: nowrap; color: var(--text); }
-.brand-mark { width: 43px; height: 42px; display: grid; place-items: center; color: #fff; }
-.brand-mark svg { width: 100%; height: 100%; overflow: visible; }
-.brand-text { display: grid; gap: 0; padding-top: 6px; }
-.brand-word { position: relative; display: block; width: max-content; }
-.brand-text strong { display: block; font: italic 800 25px/.88 "Manrope", var(--font-heading); letter-spacing: -.07em; }
-.brand-word > svg { position: absolute; width: 74px; height: 19px; right: -16px; top: -11px; overflow: visible; }
-.brand-text small { margin-top: 6px; font: 700 6.5px/1.1 "Manrope", var(--font-body); letter-spacing: .2em; color: var(--text-3); }
+.brand { display: inline-flex; align-items: center; gap: 8px; font-family: "Manrope", var(--font-heading); white-space: nowrap; color: var(--text); }
+.brand-mark { width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; }
+.brand-mark img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.brand-text { display: grid; gap: 0; }
+.brand-word { position: relative; display: block; width: max-content; font-family: "Plus Jakarta Sans", "Manrope", var(--font-heading); }
+.brand-text strong { display: block; font: italic 800 25px/.88 "Plus Jakarta Sans", "Manrope", var(--font-heading); letter-spacing: -.05em; }
+.brand-word > svg { position: absolute; width: 66px; height: 17px; right: -12px; top: -8px; overflow: visible; opacity: 0.75; }
+.brand-text small { margin-top: 5px; font: 700 6.5px/1.1 "Manrope", var(--font-body); letter-spacing: .2em; color: var(--text-3); }
 .brand-ai { color: var(--accent-text); }
 .nav-bar { display: flex; align-items: center; gap: 22px; margin-left: auto; }
 .nav-link { font-size: 15px; font-weight: 500; color: var(--text-2); padding: 6px 0; border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; }

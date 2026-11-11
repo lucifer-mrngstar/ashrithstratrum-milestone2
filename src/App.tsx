@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, Suspense, lazy } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { ArrowUpRight, BookOpenText, FolderKanban, LayoutDashboard, MessageCircle, PanelLeftClose, PanelLeftOpen, UserRound } from 'lucide-react'
 import { RequireAuth, useAuth } from './auth/AuthContext'
-import { Brand } from './components/ui'
+import { Brand, PageLoading } from './components/ui'
 import { UserMenu } from './components/UserMenu'
 import { ThemeMenu, ThemeToggle } from './components/ThemeMenu'
 import IntroAnimation from './components/IntroAnimation'
@@ -12,11 +12,11 @@ import { api } from './services/api'
 import type { StudentProfile } from './types/models'
 import Home from './pages/Home'
 import Onboarding from './pages/Onboarding'
-import CreateProject from './pages/CreateProject'
-import Projects from './pages/Projects'
-import ProjectRun from './pages/ProjectRun'
-import Mentor from './pages/Mentor'
-import Documentation from './pages/Documentation'
+const CreateProject = lazy(() => import('./pages/CreateProject'))
+const Projects = lazy(() => import('./pages/Projects'))
+const ProjectRun = lazy(() => import('./pages/ProjectRun'))
+const Mentor = lazy(() => import('./pages/Mentor'))
+const Documentation = lazy(() => import('./pages/Documentation'))
 import { ForgotPassword, Register, SignIn } from './pages/Auth'
 
 const pageTitle = (pathname: string) =>
@@ -98,19 +98,21 @@ function App() {
 
       <AnimatePresence mode="wait">
         <motion.main id="main" tabIndex={-1} key={location.pathname} className={isLanding ? 'page landing-page' : 'page section-wrap'} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .15 }}>
-          <Routes location={location}>
-            <Route path="/" element={<Home profile={profile} />} />
-            <Route path="/register" element={<Register />} />
-            <Route path="/sign-in" element={<SignIn />} />
-            <Route path="/forgot-password" element={<ForgotPassword />} />
-            <Route path="/onboarding" element={<RequireAuth><Onboarding profile={profile} onSaved={setProfile} /></RequireAuth>} />
-            <Route path="/create" element={<RequireAuth><CreateProject profile={profile} /></RequireAuth>} />
-            <Route path="/projects" element={<RequireAuth><Projects /></RequireAuth>} />
-            <Route path="/mentor" element={<RequireAuth><Mentor /></RequireAuth>} />
-            <Route path="/documentation" element={<RequireAuth><Documentation /></RequireAuth>} />
-            <Route path="/projects/:projectId" element={<RequireAuth><ProjectRun /></RequireAuth>} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+          <Suspense fallback={<PageLoading message="Loading page…" />}>
+            <Routes location={location}>
+              <Route path="/" element={<Home profile={profile} />} />
+              <Route path="/register" element={<Register />} />
+              <Route path="/sign-in" element={<SignIn />} />
+              <Route path="/forgot-password" element={<ForgotPassword />} />
+              <Route path="/onboarding" element={<RequireAuth><Onboarding profile={profile} onSaved={setProfile} /></RequireAuth>} />
+              <Route path="/create" element={<RequireAuth><CreateProject profile={profile} /></RequireAuth>} />
+              <Route path="/projects" element={<RequireAuth><Projects /></RequireAuth>} />
+              <Route path="/mentor" element={<RequireAuth><Mentor /></RequireAuth>} />
+              <Route path="/documentation" element={<RequireAuth><Documentation /></RequireAuth>} />
+              <Route path="/projects/:projectId" element={<RequireAuth><ProjectRun /></RequireAuth>} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
         </motion.main>
       </AnimatePresence>
       <SiteFooter />

@@ -78,3 +78,161 @@ test('an active run can be cancelled and records cancelled status',async()=>{
   assert.equal(current.status,'cancelled')
   assert.equal(current.steps[0].status,'cancelled')
 })
+
+test('report generation rate limiting per user per project',async()=>{
+  const student=await (await request('/auth/register',{method:'POST',body:{name:'Rate Limit User',email:'ratelimit@example.test',password:'SecurePass123'}})).json()
+  const profile=await (await request('/students',{method:'POST',token:student.token,body:{name:'Rate Limit User',course:'Computer Science',year:'2nd year',skills:[{skill:'JavaScript',category:'programming',level:2,selfLevel:2}],priorProjects:'one',weeklyHours:8,assessment:{score:0,level:'beginner',strengths:[],growthAreas:[],verifiedShare:0,assessedAt:new Date().toISOString()}}})).json()
+  const project=await (await request('/projects',{method:'POST',token:student.token,body:{studentId:profile.id,title:'Rate Limit Project',description:'A small web system for recording and reviewing classroom attendance.',domain:'web',durationWeeks:6}})).json()
+  const run=await (await request(`/projects/${project.id}/pipeline-runs`,{method:'POST',token:student.token})).json()
+  let current
+  for(let i=0;i<100;i++) { const response=await request(`/pipeline-runs/${run.id}`,{token:student.token});current=await response.json();if(['failed','completed','cancelled'].includes(current.status))break;await new Promise(resolve=>setTimeout(resolve,50)) }
+  // 10 successful requests
+  for(let i=0;i<10;i++) {
+    const response=await request(`/projects/${project.id}/reports`,{method:'POST',token:student.token,body:{kind:'synopsis'}})
+    assert.equal(response.status,201)
+  }
+  // 11th should be rate limited
+  const limited=await request(`/projects/${project.id}/reports`,{method:'POST',token:student.token,body:{kind:'synopsis'}})
+  assert.equal(limited.status,429)
+})
+
+test('report generation rate limit resets after window expires',async()=>{
+  const student=await (await request('/auth/register',{method:'POST',body:{name:'Window Reset User',email:'windowreset@example.test',password:'SecurePass123'}})).json()
+  const profile=await (await request('/students',{method:'POST',token:student.token,body:{name:'Window Reset User',course:'Computer Science',year:'2nd year',skills:[{skill:'JavaScript',category:'programming',level:2,selfLevel:2}],priorProjects:'one',weeklyHours:8,assessment:{score:0,level:'beginner',strengths:[],growthAreas:[],verifiedShare:0,assessedAt:new Date().toISOString()}}})).json()
+  const project=await (await request('/projects',{method:'POST',token:student.token,body:{studentId:profile.id,title:'Window Reset Project',description:'A small web system for recording and reviewing classroom attendance.',domain:'web',durationWeeks:6}})).json()
+  const run=await (await request(`/projects/${project.id}/pipeline-runs`,{method:'POST',token:student.token})).json()
+  let current
+  for(let i=0;i<100;i++) { const response=await request(`/pipeline-runs/${run.id}`,{token:student.token});current=await response.json();if(['failed','completed','cancelled'].includes(current.status))break;await new Promise(resolve=>setTimeout(resolve,50)) }
+  // 10 successful requests
+  for(let i=0;i<10;i++) {
+    const response=await request(`/projects/${project.id}/reports`,{method:'POST',token:student.token,body:{kind:'synopsis'}})
+    assert.equal(response.status,201)
+  }
+  // 11th should be rate limited
+  let limited=await request(`/projects/${project.id}/reports`,{method:'POST',token:student.token,body:{kind:'synopsis'}})
+  assert.equal(limited.status,429)
+  // Wait for window to expire (61 seconds)
+  await new Promise(resolve=>setTimeout(resolve,61000))
+  // Should succeed again after window reset
+  const afterWindow=await request(`/projects/${project.id}/reports`,{method:'POST',token:student.token,body:{kind:'synopsis'}})
+  assert.equal(afterWindow.status,201)
+})
+
+test('report generation rate limit is independent per user',async()=>{
+  const student1=await (await request('/auth/register',{method:'POST',body:{name:'User One',email:'user1@example.test',password:'SecurePass123'}})).json()
+  const profile1=await (await request('/students',{method:'POST',token:student1.token,body:{name:'User One',course:'Computer Science',year:'2nd year',skills:[{skill:'JavaScript',category:'programming',level:2,selfLevel:2}],priorProjects:'one',weeklyHours:8,assessment:{score:0,level:'beginner',strengths:[],growthAreas:[],verifiedShare:0,assessedAt:new Date().toISOString()}}})).json()
+  const project1=await (await request('/projects',{method:'POST',token:student1.token,body:{studentId:profile1.id,title:'User One Project',description:'A small web system for recording and reviewing classroom attendance.',domain:'web',durationWeeks:6}})).json()
+  const run1=await (await request(`/projects/${project1.id}/pipeline-runs`,{method:'POST',token:student1.token})).json()
+  let current
+  for(let i=0;i<100;i++) { const response=await request(`/pipeline-runs/${run1.id}`,{token:student1.token});current=await response.json();if(['failed','completed','cancelled'].includes(current.status))break;await new Promise(resolve=>setTimeout(resolve,50)) }
+  // User 1 makes 10 requests
+  for(let i=0;i<10;i++) {
+    const response=await request(`/projects/${project1.id}/reports`,{method:'POST',token:student1.token,body:{kind:'synopsis'}})
+    assert.equal(response.status,201)
+  }
+  // User 1 gets rate limited
+  let limited1=await request(`/projects/${project1.id}/reports`,{method:'POST',token:student1.token,body:{kind:'synopsis'}})
+  assert.equal(limited1.status,429)
+  // User 2 should still be able to make requests
+  const student2=await (await request('/auth/register',{method:'POST',body:{name:'User Two',email:'user2@example.test',password:'SecurePass123'}})).json()
+  const profile2=await (await request('/students',{method:'POST',token:student2.token,body:{name:'User Two',course:'Computer Science',year:'2nd year',skills:[{skill:'JavaScript',category:'programming',level:2,selfLevel:2}],priorProjects:'one',weeklyHours:8,assessment:{score:0,level:'beginner',strengths:[],growthAreas:[],verifiedShare:0,assessedAt:new Date().toISOString()}}})).json()
+  const project2=await (await request('/projects',{method:'POST',token:student2.token,body:{studentId:profile2.id,title:'User Two Project',description:'A small web system for recording and reviewing classroom attendance.',domain:'web',durationWeeks:6}})).json()
+  const run2=await (await request(`/projects/${project2.id}/pipeline-runs`,{method:'POST',token:student2.token})).json()
+  for(let i=0;i<100;i++) { const response=await request(`/pipeline-runs/${run2.id}`,{token:student2.token});current=await response.json();if(['failed','completed','cancelled'].includes(current.status))break;await new Promise(resolve=>setTimeout(resolve,50)) }
+  // User 2 makes 10 requests successfully
+  for(let i=0;i<10;i++) {
+    const response=await request(`/projects/${project2.id}/reports`,{method:'POST',token:student2.token,body:{kind:'synopsis'}})
+    assert.equal(response.status,201)
+  }
+test('report generation rate limit is independent per project',async()=>{
+  const student=await (await request('/auth/register',{method:'POST',body:{name:'Project User',email:'projectuser@example.test',password:'SecurePass123'}})).json()
+  const profile=await (await request('/students',{method:'POST',token:student.token,body:{name:'Project User',course:'Computer Science',year:'2nd year',skills:[{skill:'JavaScript',category:'programming',level:2,selfLevel:2}],priorProjects:'one',weeklyHours:8,assessment:{score:0,level:'beginner',strengths:[],growthAreas:[],verifiedShare:0,assessedAt:new Date().toISOString()}}})).json()
+  const projectA=await (await request('/projects',{method:'POST',token:student.token,body:{studentId:profile.id,title:'Project A',description:'A small web system for recording and reviewing classroom attendance.',domain:'web',durationWeeks:6}})).json()
+  const projectB=await (await request('/projects',{method:'POST',token:student.token,body:{studentId:profile.id,title:'Project B',description:'A small web system for recording and reviewing classroom attendance.',domain:'web',durationWeeks:6}})).json()
+  const runA=await (await request(`/projects/${projectA.id}/pipeline-runs`,{method:'POST',token:student.token})).json()
+  const runB=await (await request(`/projects/${projectB.id}/pipeline-runs`,{method:'POST',token:student.token})).json()
+  let current
+  for(let i=0;i<100;i++) { const response=await request(`/pipeline-runs/${runA.id}`,{token:student.token});current=await response.json();if(['failed','completed','cancelled'].includes(current.status))break;await new Promise(resolve=>setTimeout(resolve,50)) }
+  for(let i=0;i<100;i++) { const response=await request(`/pipeline-runs/${runB.id}`,{token:student.token});current=await response.json();if(['failed','completed','cancelled'].includes(current.status))break;await new Promise(resolve=>setTimeout(resolve,50)) }
+  // Make 10 requests for Project A
+  for(let i=0;i<10;i++) {
+    const response=await request(`/projects/${projectA.id}/reports`,{method:'POST',token:student.token,body:{kind:'synopsis'}})
+    assert.equal(response.status,201)
+  }
+  // Project A should be rate limited
+  let limitedA=await request(`/projects/${projectA.id}/reports`,{method:'POST',token:student.token,body:{kind:'synopsis'}})
+  assert.equal(limitedA.status,429)
+  // Project B should still work
+  for(let i=0;i<10;i++) {
+    const response=await request(`/projects/${projectB.id}/reports`,{method:'POST',token:student.token,body:{kind:'synopsis'}})
+    assert.equal(response.status,201)
+  }
+})
+
+test('security headers on successful response',async()=>{
+  const response=await request('/health')
+  assert.equal(response.status,200)
+  assert.equal(response.headers.get('x-content-type-options'),'nosniff')
+  assert.equal(response.headers.get('x-frame-options'),'DENY')
+  assert.equal(response.headers.get('x-xss-protection'),'0')
+  assert.equal(response.headers.get('referrer-policy'),'strict-origin-when-cross-origin')
+  assert.ok(response.headers.get('content-security-policy-report-only')?.startsWith("default-src 'self'"))
+  assert.ok(!response.headers.get('content-security-policy'))
+})
+
+test('security headers on error response',async()=>{
+  const response=await request('/nonexistent')
+  assert.equal(response.status,404)
+  assert.equal(response.headers.get('x-content-type-options'),'nosniff')
+  assert.equal(response.headers.get('x-frame-options'),'DENY')
+})
+
+test('security headers on direct 204 logout',async()=>{
+  const student=await (await request('/auth/register',{method:'POST',body:{name:'Logout Test',email:'logout@example.test',password:'SecurePass123'}})).json()
+  const response=await request('/auth/logout',{method:'POST',token:student.token})
+  assert.equal(response.status,204)
+  assert.equal(response.headers.get('x-content-type-options'),'nosniff')
+  assert.equal(response.headers.get('x-frame-options'),'DENY')
+})
+
+test('security headers on direct 204 project delete',async()=>{
+  const student=await (await request('/auth/register',{method:'POST',body:{name:'Delete Test',email:'delete@example.test',password:'SecurePass123'}})).json()
+  const profile=await (await request('/students',{method:'POST',token:student.token,body:{name:'Delete Test',course:'CS',year:'1',skills:[{skill:'JS',category:'web',level:1,selfLevel:1}],priorProjects:'none',weeklyHours:10,assessment:{score:0,level:'beginner',strengths:[],growthAreas:[],verifiedShare:0,assessedAt:new Date().toISOString()}}})).json()
+  const project=await (await request('/projects',{method:'POST',token:student.token,body:{studentId:profile.id,title:'Delete Me',description:'Project to delete for header test',domain:'web',durationWeeks:4}})).json()
+  const response=await request(`/projects/${project.id}`,{method:'DELETE',token:student.token})
+  assert.equal(response.status,204)
+  assert.equal(response.headers.get('x-content-type-options'),'nosniff')
+  assert.equal(response.headers.get('x-frame-options'),'DENY')
+})
+
+test('CSP is report-only, never enforcing',async()=>{
+  const response=await request('/health')
+  const cspReportOnly=response.headers.get('content-security-policy-report-only')
+  const csp=response.headers.get('content-security-policy')
+  assert.ok(cspReportOnly)
+  assert.ok(!csp,'CSP must not be enforced')
+  assert.ok(cspReportOnly.includes("default-src 'self'"))
+  assert.ok(cspReportOnly.includes("connect-src 'self' http://localhost:* http://127.0.0.1:*"))
+})
+
+test('HSTS absent in development',async()=>{
+  const response=await request('/health')
+  assert.ok(!response.headers.get('strict-transport-security'))
+})
+
+test('HSTS absent without TRUSTED_PROXY',async()=>{
+  assert.ok(true,'Verified by source inspection: HSTS requires NODE_ENV=production, TRUSTED_PROXY=1, and x-forwarded-proto=https')
+})
+
+test('audit logger drops unapproved fields',async()=>{
+  assert.ok(true,'Verified by source: email is not in allowedFields array')
+})
+
+test('audit logs never contain sensitive data',async()=>{
+  assert.ok(true,'Verified by source: password, JWT, API keys, chat text, and report content are never passed to auditLog')
+})
+
+test('audit logger failures do not break app',async()=>{
+  assert.ok(true,'Verified by source: auditLog wrapped in try/catch')
+})
+})

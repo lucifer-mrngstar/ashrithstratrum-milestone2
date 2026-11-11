@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, ArrowUpRight, BrainCircuit, Calculator, Check, ChevronDown, ChevronRight, ClipboardCheck, Clock3, FolderKanban, Gauge, Lightbulb, Orbit, Package, Rocket, ShieldCheck, Sparkles, Sprout, Target, TrendingUp, UsersRound, X, type LucideIcon } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, BrainCircuit, Calculator, Check, ChevronDown, ChevronRight, Clock3, FolderKanban, Gauge, Lightbulb, Orbit, Package, Rocket, ShieldCheck, Sparkles, Sprout, Target, TrendingUp, UsersRound, X, type LucideIcon } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { api } from '../services/api'
 import { LEVEL_LABELS, PROFICIENCY_LABELS, projectTypeLabel, readinessBreakdown } from '../lib/skills'

@@ -12,7 +12,8 @@ for (const envFile of [resolve(serverDir, '.env'), resolve(projectDir, '.env')])
   catch (error) { if (error.code !== 'ENOENT') throw error }
 }
 
-const { authenticate, createProject, databasePath, deleteProject, getMilestoneProgress, getProfile, getProject, getRun, isCancelled, listProjects, login, logout, ownsProfile, register, requestCancel, saveProfile, saveRun, setLatestRun, setMilestoneProgress } = await import('./store.mjs')
+const { authenticate, createProject, databasePath, deleteProject, getMilestoneProgress, getProfile, getProject, getRun, isCancelled, listProjects, login, logout, ownsProfile, register, requestCancel, saveProfile, saveRun, setLatestRun, setMilestoneProgress,
+  saveMentorMessage, getMentorMessages, saveReport, listReports, getReport } = await import('./store.mjs')
 
 const port = Number(process.env.PORT ?? 3000)
 const model = process.env.LLM_MODEL ?? 'gpt-4o-mini'
@@ -23,6 +24,31 @@ const requestTimeoutMs = Number(process.env.LLM_TIMEOUT_MS ?? 60000)
 const maxBodyBytes = 64 * 1024
 const controllers = new Map()
 const loginFailures = new Map()
+const reportGenAttempts = new Map()
+
+/** Audit logger: structured JSON output, strict field allowlist, never logs PII. */
+function auditLog(event, details) {
+  const allowedFields = ['userId', 'studentId', 'projectId', 'runId', 'domain', 'status', 'kind']
+  const redacted = Object.fromEntries(
+    Object.entries(details).filter(([key]) => allowedFields.includes(key))
+  )
+  try { console.log(JSON.stringify({ event, ...redacted, timestamp: new Date().toISOString() })) }
+  catch (e) { /* Logging failures must not break operations */ }
+}
+
+/** Security headers: defensive, report-only CSP, conditional HSTS. */
+function applySecurityHeaders(request, response) {
+  response.setHeader('X-Content-Type-Options', 'nosniff')
+  response.setHeader('X-Frame-Options', 'DENY')
+  response.setHeader('X-XSS-Protection', '0')
+  response.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+  response.setHeader('Content-Security-Policy-Report-Only',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' http://localhost:* http://127.0.0.1:*"
+  )
+  if (process.env.NODE_ENV === 'production' && process.env.TRUSTED_PROXY === '1' && request.headers['x-forwarded-proto'] === 'https') {
+    response.setHeader('Strict-Transport-Security', 'max-age=63072000')
+  }
+}
 const projectInputSchema = z.object({ studentId: z.string().min(1), title: z.string().trim().min(3).max(80), description: z.string().trim().min(30).max(1000), domain: z.enum(['ai_ml','web','mobile','iot','data','other']), customDomain: z.string().max(40).optional(), durationWeeks: z.number().int().min(4).max(24) })
 
 function assessProfile(body) {
@@ -172,7 +198,8 @@ const jsonSchemaDescription = `Return one JSON object with exactly these top-lev
 }
 Use valid JSON only. Keep the plan within the requested project duration, schedule sequentially, and make each milestone's hours realistic for the student's weekly availability. Do not claim clinical diagnostic capability; healthcare concepts must be educational and non-clinical.`
 
-function sendJson(response, status, payload) {
+function sendJson(request, response, status, payload) {
+  applySecurityHeaders(request, response)
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -281,11 +308,12 @@ const completedAnalyses = new Map()
 const server = createServer(async (request, response) => {
   const origin = request.headers.origin
   if (origin && !isAllowedFrontendOrigin(origin)) {
-    sendJson(response, 403, { error: 'This origin is not allowed.' })
+    sendJson(request, response, 403, { error: 'This origin is not allowed.' })
     return
   }
   if (origin) response.setHeader('Access-Control-Allow-Origin', origin)
   if (request.method === 'OPTIONS') {
+    applySecurityHeaders(request, response)
     response.writeHead(204, {
       'Access-Control-Allow-Origin': origin ?? frontendOrigin,
       'Access-Control-Allow-Methods': 'POST, GET, PUT, OPTIONS',
@@ -297,53 +325,61 @@ const server = createServer(async (request, response) => {
     return
   }
   if (request.method === 'GET' && request.url === '/health') {
-    sendJson(response, 200, { status: 'ok', providerConfigured: Boolean(apiKey), model, database: 'sqlite' })
+    sendJson(request, response, 200, { status: 'ok', providerConfigured: Boolean(apiKey), model, database: 'sqlite' })
     return
   }
   const url = new URL(request.url, `http://${request.headers.host ?? 'localhost'}`)
   if (request.method === 'POST' && url.pathname === '/api/projects/analyze') {
-    sendJson(response, 410, { error: 'Use the authenticated /projects/:id/pipeline-runs endpoint so each agent step is tracked and access controlled.' })
+    sendJson(request, response, 410, { error: 'Use the authenticated /projects/:id/pipeline-runs endpoint so each agent step is tracked and access controlled.' })
     return
   }
   try {
     if (request.method === 'POST' && url.pathname === '/auth/register') {
       const body=z.object({name:z.string().trim().min(2).max(50),email:z.string().email(),password:z.string().min(8).max(128).regex(/[A-Za-z]/).regex(/[0-9]/)}).parse(await readJson(request))
-      sendJson(response,201,await register(body)); return
+      const session=await register(body)
+      auditLog('auth_register', { userId: session.user.id })
+      sendJson(request, response,201,session); return
     }
     if (request.method === 'POST' && url.pathname === '/auth/login') {
       const body=z.object({email:z.string().email(),password:z.string().min(1).max(128)}).parse(await readJson(request))
       const key=`${request.socket.remoteAddress}:${body.email.trim().toLowerCase()}`
       const attempts=loginFailures.get(key)??{count:0,until:0}
       if(attempts.until>Date.now() && attempts.count>=5) throw Object.assign(new Error('Too many sign-in attempts. Wait 15 minutes and try again.'),{status:429})
-      try { const session=await login(body); loginFailures.delete(key); sendJson(response,200,session); return }
-      catch(error) { attempts.count+=1; attempts.until=Date.now()+15*60*1000; loginFailures.set(key,attempts); throw error }
+      try { const session=await login(body); loginFailures.delete(key); auditLog('auth_login_success', { userId: session.user.id }); sendJson(request, response,200,session); return }
+      catch(error) { attempts.count+=1; attempts.until=Date.now()+15*60*1000; loginFailures.set(key,attempts); auditLog('auth_login_failure', {}); throw error }
     }
-    if (request.method === 'POST' && url.pathname === '/auth/logout') { authenticate(request); logout(request); response.writeHead(204); response.end(); return }
+    if (request.method === 'POST' && url.pathname === '/auth/logout') {
+        const user = authenticate(request);
+        logout(request);
+        auditLog('auth_logout', { userId: user.id });
+        applySecurityHeaders(request, response);
+        response.writeHead(204); response.end(); return
+    }
     if (request.method === 'POST' && url.pathname === '/auth/reset-password') throw Object.assign(new Error('Password reset is disabled until a verified email recovery flow is configured.'),{status:501})
 
     if (url.pathname.startsWith('/auth/') || url.pathname.startsWith('/students') || url.pathname.startsWith('/projects') || url.pathname.startsWith('/pipeline-runs')) {
       const user=authenticate(request)
-      if (request.method==='GET' && url.pathname==='/students/me') { const profile=getProfile(user); if(!profile) throw Object.assign(new Error('You have not created a profile yet.'),{status:404}); sendJson(response,200,profile); return }
-      if (request.method==='POST' && url.pathname==='/students') { const body=profileInputSchema.parse(await readJson(request)); body.assessment=assessProfile(body); sendJson(response,201,saveProfile(user,body)); return }
+      if (request.method==='GET' && url.pathname==='/students/me') { const profile=getProfile(user); if(!profile) throw Object.assign(new Error('You have not created a profile yet.'),{status:404}); sendJson(request, response,200,profile); return }
+      if (request.method==='POST' && url.pathname==='/students') { const body=profileInputSchema.parse(await readJson(request)); body.assessment=assessProfile(body); sendJson(request, response,201,saveProfile(user,body)); return }
       const profileMatch=url.pathname.match(/^\/students\/([^/]+)$/)
-      if (profileMatch && request.method==='PUT') { if(!ownsProfile(user,profileMatch[1])) throw Object.assign(new Error('Profile not found.'),{status:404}); const body=profileInputSchema.parse(await readJson(request)); body.assessment=assessProfile(body); sendJson(response,200,saveProfile(user,body)); return }
+      if (profileMatch && request.method==='PUT') { if(!ownsProfile(user,profileMatch[1])) throw Object.assign(new Error('Profile not found.'),{status:404}); const body=profileInputSchema.parse(await readJson(request)); body.assessment=assessProfile(body); sendJson(request, response,200,saveProfile(user,body)); return }
       const studentProjects=url.pathname.match(/^\/students\/([^/]+)\/projects$/)
-      if (studentProjects && request.method==='GET') { if(!ownsProfile(user,studentProjects[1])) throw Object.assign(new Error('Profile not found.'),{status:404}); sendJson(response,200,listProjects(user,studentProjects[1])); return }
-      if (request.method==='POST' && url.pathname==='/projects') { const body=projectInputSchema.parse(await readJson(request)); if(!ownsProfile(user,body.studentId)) throw Object.assign(new Error('Profile not found.'),{status:404}); if(body.domain==='other' && !body.customDomain?.trim()) throw Object.assign(new Error('Please specify the project domain.'),{status:422}); sendJson(response,201,createProject(body)); return }
+      if (studentProjects && request.method==='GET') { if(!ownsProfile(user,studentProjects[1])) throw Object.assign(new Error('Profile not found.'),{status:404}); sendJson(request, response,200,listProjects(user,studentProjects[1])); return }
+      if (request.method==='POST' && url.pathname==='/projects') { const body=projectInputSchema.parse(await readJson(request)); if(!ownsProfile(user,body.studentId)) throw Object.assign(new Error('Profile not found.'),{status:404}); if(body.domain==='other' && !body.customDomain?.trim()) throw Object.assign(new Error('Please specify the project domain.'),{status:422}); const project=createProject(body); auditLog('project_create', { userId: user.id, studentId: body.studentId, projectId: project.id, domain: body.domain }); sendJson(request, response,201,project); return }
       const projectMatch=url.pathname.match(/^\/projects\/([^/]+)$/)
-      if(projectMatch && request.method==='GET') { const project=getProject(user,projectMatch[1]); if(!project) throw Object.assign(new Error('Project not found.'),{status:404}); sendJson(response,200,project); return }
-      if(projectMatch && request.method==='DELETE') { if(!deleteProject(user,projectMatch[1])) throw Object.assign(new Error('Project not found.'),{status:404}); response.writeHead(204);response.end();return }
+      if(projectMatch && request.method==='GET') { const project=getProject(user,projectMatch[1]); if(!project) throw Object.assign(new Error('Project not found.'),{status:404}); sendJson(request, response,200,project); return }
+      if(projectMatch && request.method==='DELETE') { if(!deleteProject(user,projectMatch[1])) throw Object.assign(new Error('Project not found.'),{status:404}); auditLog('project_delete', { userId: user.id, projectId: projectMatch[1] }); applySecurityHeaders(request, response); response.writeHead(204);response.end();return }
       const milestoneListMatch=url.pathname.match(/^\/projects\/([^/]+)\/milestones$/)
       if(milestoneListMatch && request.method==='GET') {
         if(!getProject(user,milestoneListMatch[1])) throw Object.assign(new Error('Project not found.'),{status:404})
-        sendJson(response,200,getMilestoneProgress(user,milestoneListMatch[1])); return
+        sendJson(request, response,200,getMilestoneProgress(user,milestoneListMatch[1])); return
       }
       const milestoneMatch=url.pathname.match(/^\/projects\/([^/]+)\/milestones\/(\d+)$/)
       if(milestoneMatch && request.method==='PUT') {
         const project=getProject(user,milestoneMatch[1]); if(!project) throw Object.assign(new Error('Project not found.'),{status:404})
         const week=z.coerce.number().int().min(1).max(24).parse(milestoneMatch[2])
         const body=z.object({status:z.enum(['planned','in-progress','half-done','done'])}).parse(await readJson(request))
-        sendJson(response,200,setMilestoneProgress(user,project.id,week,body.status)); return
+        sendJson(request, response,200,setMilestoneProgress(user,project.id,week,body.status)); return
       }
       const triggerMatch=url.pathname.match(/^\/projects\/([^/]+)\/pipeline-runs$/)
       if(triggerMatch && request.method==='POST') {
@@ -351,23 +387,65 @@ const server = createServer(async (request, response) => {
         if(!apiKey) throw Object.assign(new Error('OpenAI API key is not configured on the backend.'),{status:503})
         const profile=getProfile(user); if(!profile) throw Object.assign(new Error('Student profile not found.'),{status:404})
         const createdAt=new Date().toISOString(); const run={id:`run_${randomUUID()}`,projectId:project.id,status:'queued',analysisMode:'live',steps:['feasibility','scope_tech','planner','risk'].map(agentId=>({agentId,status:'queued'})),createdAt}
-        saveRun(run); setLatestRun(project.id,run.id); setImmediate(()=>void processRun(run,{project,profile})); sendJson(response,201,run); return
+        saveRun(run); setLatestRun(project.id,run.id); setImmediate(()=>void processRun(run,{project,profile})); auditLog('pipeline_trigger', { userId: user.id, studentId: profile.id, projectId: project.id, runId: run.id }); sendJson(request, response,201,run); return
       }
       const runMatch=url.pathname.match(/^\/pipeline-runs\/([^/]+)$/)
-      if(runMatch && request.method==='GET') { const run=getRun(user,runMatch[1]); if(!run) throw Object.assign(new Error('Pipeline run not found.'),{status:404}); sendJson(response,200,run);return }
+      if(runMatch && request.method==='GET') { const run=getRun(user,runMatch[1]); if(!run) throw Object.assign(new Error('Pipeline run not found.'),{status:404}); sendJson(request, response,200,run);return }
       const cancelMatch=url.pathname.match(/^\/pipeline-runs\/([^/]+)\/cancel$/)
-      if(cancelMatch && request.method==='POST') { const run=getRun(user,cancelMatch[1]); if(!run) throw Object.assign(new Error('Pipeline run not found.'),{status:404}); if(!requestCancel(user,run.id)) throw Object.assign(new Error('This run is no longer active.'),{status:409}); controllers.get(run.id)?.abort(); sendJson(response,200,{message:'Cancellation requested.'});return }
+      if(cancelMatch && request.method==='POST') { const run=getRun(user,cancelMatch[1]); if(!run) throw Object.assign(new Error('Pipeline run not found.'),{status:404}); if(!requestCancel(user,run.id)) throw Object.assign(new Error('This run is no longer active.'),{status:409}); controllers.get(run.id)?.abort(); auditLog('pipeline_cancel', { userId: user.id, projectId: run.projectId, runId: run.id }); sendJson(request, response,200,{message:'Cancellation requested.'});return }
+      const chatMatch = url.pathname.match(/^\/projects\/([^/]+)\/mentor\/messages$/)
+      if (chatMatch && request.method === 'GET') { sendJson(request, response, 200, getMentorMessages(user, chatMatch[1])); return }
+      if (chatMatch && request.method === 'POST') {
+        const body = z.object({ text: z.string().trim().min(1).max(500) }).parse(await readJson(request))
+        const key = `${user.id}:${chatMatch[1]}`
+        const attempts = loginFailures.get(key) ?? { count: 0, until: 0 }
+        if (attempts.until > Date.now() && attempts.count >= 10) throw Object.assign(new Error('Too many messages. Wait a moment.'), { status: 429 })
+        try { sendJson(request, response, 201, saveMentorMessage(user, chatMatch[1], 'student', body.text)); loginFailures.delete(key); return }
+        catch (e) { attempts.count += 1; attempts.until = Date.now() + 60000; loginFailures.set(key, attempts); throw e }
+      }
+      const reportListMatch = url.pathname.match(/^\/projects\/([^/]+)\/reports$/)
+      if (reportListMatch && request.method === 'GET') { sendJson(request, response, 200, listReports(user, reportListMatch[1])); return }
+      if (reportListMatch && request.method === 'POST') {
+        const body = z.object({ kind: z.enum(['synopsis', 'progress', 'final']) }).parse(await readJson(request))
+        const run = getRun(user, getProject(user, reportListMatch[1])?.latestRunId ?? '')
+        if (body.kind !== 'synopsis' && !run?.results) throw Object.assign(new Error('Report unavailable.'), { status: 409 })
+        const key = `${user.id}:${reportListMatch[1]}`
+        const attempts = reportGenAttempts.get(key) ?? { count: 0, until: 0 }
+        // If window has expired, reset the counter
+        if (attempts.until <= Date.now()) {
+          attempts.count = 0
+          attempts.until = Date.now() + 60000
+        }
+        if (attempts.count >= 10) throw Object.assign(new Error('Too many report requests. Wait a moment.'), { status: 429 })
+        try {
+          // Simplified content generation (mock for now as backend logic is not finalized for AI pipeline integration)
+          const content = 'Mock report content'
+          const report = saveReport(user, reportListMatch[1], body.kind, content)
+          auditLog('report_generate', { userId: user.id, studentId: getProject(user, reportListMatch[1])?.studentId, projectId: reportListMatch[1], kind: body.kind })
+          sendJson(request, response, 201, report)
+          attempts.count += 1
+          reportGenAttempts.set(key, attempts)
+          return
+        } catch (e) {
+          attempts.count += 1
+          attempts.until = Date.now() + 60000
+          reportGenAttempts.set(key, attempts)
+          throw e
+        }
+      }
     }
   } catch(error) {
-    if(error instanceof z.ZodError) { sendJson(response,422,{message:error.issues.map(issue=>`${issue.path.join('.')}: ${issue.message}`).join('; ')}); return }
-    sendJson(response,error.status??500,{message:error.message??'Server error.'}); return
+    if(error instanceof z.ZodError) { sendJson(request, response,422,{message:error.issues.map(issue=>`${issue.path.join('.')}: ${issue.message}`).join('; ')}); return }
+    sendJson(request, response,error.status??500,{message:error.message??'Server error.'}); return
   }
   if (request.method !== 'POST' || request.url !== '/api/projects/analyze') {
-    sendJson(response, 404, { error: 'Endpoint not found.' })
+    applySecurityHeaders(request, response)
+    sendJson(request, response, 404, { error: 'Endpoint not found.' })
     return
   }
   if (!apiKey) {
-    sendJson(response, 503, { error: 'LLM_API_KEY is not configured on the backend. Add it to the server environment and restart the backend.' })
+    applySecurityHeaders(request, response)
+    sendJson(request, response, 503, { error: 'LLM_API_KEY is not configured on the backend. Add it to the server environment and restart the backend.' })
     return
   }
 
@@ -380,7 +458,7 @@ const server = createServer(async (request, response) => {
     }).parse(body)
     const cached = runId ? completedAnalyses.get(runId) : undefined
     if (cached) {
-      sendJson(response, 200, cached)
+      sendJson(request, response, 200, cached)
       return
     }
     let task = runId ? inFlightAnalyses.get(runId) : undefined
@@ -394,25 +472,25 @@ const server = createServer(async (request, response) => {
         completedAnalyses.set(runId, analysis)
         if (completedAnalyses.size > 100) completedAnalyses.delete(completedAnalyses.keys().next().value)
       }
-      sendJson(response, 200, analysis)
+      sendJson(request, response, 200, analysis)
     } finally {
       if (runId && inFlightAnalyses.get(runId) === task) inFlightAnalyses.delete(runId)
     }
   } catch (error) {
     if (error?.name === 'AbortError') {
-      sendJson(response, 504, { error: 'The LLM request timed out. Please try again.' })
+      sendJson(request, response, 504, { error: 'The LLM request timed out. Please try again.' })
       return
     }
     if (error instanceof z.ZodError) {
-      sendJson(response, 400, { error: 'The project or student profile is incomplete or invalid.', details: error.issues })
+      sendJson(request, response, 400, { error: 'The project or student profile is incomplete or invalid.', details: error.issues })
       return
     }
     if (error?.status) {
-      sendJson(response, error.status, { error: error.message })
+      sendJson(request, response, error.status, { error: error.message })
       return
     }
     console.error('Analysis request failed:', error)
-    sendJson(response, 500, { error: 'Analysis failed due to a backend error. Check the backend logs and try again.' })
+    sendJson(request, response, 500, { error: 'Analysis failed due to a backend error. Check the backend logs and try again.' })
   }
 })
 

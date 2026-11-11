@@ -6,7 +6,7 @@
  */
 import { assessSkills } from '../lib/skills'
 import { load, newId, save } from '../lib/storage'
-import type { NewProjectIdea, PipelineRun, ProjectIdea, StudentProfile } from '../types/models'
+import type { MentorMessage, NewProjectIdea, PipelineRun, ProjectIdea, ProjectReport, StudentProfile } from '../types/models'
 import { completeDemoRun, deleteDemoRuns, getDemoRun, triggerDemoRun } from './demoPipeline'
 import { ApiError, http, isDemoMode } from './http'
 import { getSession } from './session'
@@ -30,6 +30,47 @@ const readProjects = (uid: string) => load<ProjectIdea[]>(projectsKey(uid), [])
 const cacheProject = (uid: string, project: ProjectIdea) => save(projectsKey(uid), [project, ...readProjects(uid).filter(p => p.id !== project.id)])
 
 export const api = {
+  /** Get mentor chat messages for a project */
+  async getMentorMessages(projectId: string): Promise<MentorMessage[]> {
+    if (isDemoMode) return load<MentorMessage[]>(`mentor:${projectId}`, [])
+    return http<MentorMessage[]>(`/projects/${projectId}/mentor/messages`)
+  },
+
+  /** Send a mentor message */
+  async sendMentorMessage(projectId: string, text: string): Promise<{ studentMessage: MentorMessage; mentorReply: MentorMessage }> {
+    if (isDemoMode) {
+      const messages = load<MentorMessage[]>(`mentor:${projectId}`, [])
+      const studentMessage: MentorMessage = { id: newId('msg'), projectId, role: 'student', text, createdAt: new Date().toISOString() }
+      const mentorReply: MentorMessage = { id: newId('msg'), projectId, role: 'mentor', text: `Thanks for your message. I'll respond shortly about: ${text.substring(0, 50)}...`, createdAt: new Date().toISOString() }
+      save(`mentor:${projectId}`, [...messages, studentMessage, mentorReply])
+      return { studentMessage, mentorReply }
+    }
+    return http<{ studentMessage: MentorMessage; mentorReply: MentorMessage }>(`/projects/${projectId}/mentor/messages`, { method: 'POST', body: JSON.stringify({ text }) })
+  },
+
+  /** List reports for a project */
+  async listReports(projectId: string): Promise<ProjectReport[]> {
+    if (isDemoMode) return load<ProjectReport[]>(`reports:${projectId}`, [])
+    return http<ProjectReport[]>(`/projects/${projectId}/reports`)
+  },
+
+  /** Generate a report for a project */
+  async generateReport(projectId: string, kind: 'synopsis' | 'progress' | 'final'): Promise<ProjectReport> {
+    if (isDemoMode) {
+      const reports = load<ProjectReport[]>(`reports:${projectId}`, [])
+      const report: ProjectReport = {
+        id: newId('rep'),
+        projectId,
+        kind,
+        content: `# Report: ${kind} for project ${projectId}\n\nGenerated locally in demo mode.`,
+        createdAt: new Date().toISOString()
+      }
+      save(`reports:${projectId}`, [...reports, report])
+      return report
+    }
+    return http<ProjectReport>(`/projects/${projectId}/reports`, { method: 'POST', body: JSON.stringify({ kind }) })
+  },
+
   /** The signed-in student's profile, cached locally so the UI can render instantly. */
   getProfile(): StudentProfile | null {
     const uid = getSession()?.user.id

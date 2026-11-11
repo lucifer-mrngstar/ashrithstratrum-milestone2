@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { ArrowDownToLine, BookOpenText, CircleAlert, ClipboardList, FileCheck2, FileText, LoaderCircle, Printer, Sparkles } from 'lucide-react'
 import { errorMessage } from '../components/ui'
 import { api, type MilestoneProgress } from '../services/api'
-import type { PipelineRun, ProjectIdea } from '../types/models'
+import type { PipelineRun, ProjectIdea, ProjectReport } from '../types/models'
 
 type ReportKind = 'synopsis' | 'progress' | 'final'
 const reportOptions: { kind: ReportKind; title: string; description: string; icon: typeof FileText }[] = [
@@ -17,7 +17,9 @@ export default function Documentation() {
   const [projectId, setProjectId] = useState('')
   const [run, setRun] = useState<PipelineRun | null>(null)
   const [milestones, setMilestones] = useState<MilestoneProgress[]>([])
+  const [reports, setReports] = useState<ProjectReport[]>([])
   const [generated, setGenerated] = useState<ReportKind | null>(null)
+  const [generating, setGenerating] = useState(false)
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
@@ -33,19 +35,40 @@ export default function Documentation() {
 
   useEffect(() => {
     let cancelled = false
-    setRun(null); setMilestones([]); setGenerated(null)
+    setRun(null); setMilestones([]); setGenerated(null); setReports([])
     setError('')
     if (!project) return () => { cancelled = true }
     setDetailLoading(true)
     const runPromise = project.latestRunId ? api.getPipelineRun(project.latestRunId) : Promise.resolve(null)
-    Promise.all([runPromise, api.getMilestoneProgress(project.id).catch(() => [])])
-      .then(([value, progress]) => { if (!cancelled) { setRun(value); setMilestones(progress) } })
+    const reportsPromise = api.listReports(project.id).catch(() => [])
+    Promise.all([runPromise, api.getMilestoneProgress(project.id).catch(() => []), reportsPromise])
+      .then(([value, progress, reportList]) => { if (!cancelled) { setRun(value); setMilestones(progress); setReports(reportList) } })
       .catch(e => { if (!cancelled) setError(errorMessage(e)) })
       .finally(() => { if (!cancelled) setDetailLoading(false) })
     return () => { cancelled = true }
   }, [projectId])
 
   const content = useMemo(() => generated && project ? makeReport(generated, project, run, milestones) : '', [generated, project, run, milestones])
+  const generateReportFor = async (kind: ReportKind) => {
+    if (!project) return
+    // Check if report of this kind already exists
+    const existing = reports.find(r => r.kind === kind)
+    if (existing) {
+      setGenerated(kind)
+      return
+    }
+    setGenerating(true)
+    setError('')
+    try {
+      const report = await api.generateReport(project.id, kind)
+      setReports(prev => [...prev, report])
+      setGenerated(kind)
+    } catch (e) {
+      setError(errorMessage(e))
+    } finally {
+      setGenerating(false)
+    }
+  }
   const downloadFile = (blob: Blob, extension: string) => {
     if (!project || !generated) return
     const url = URL.createObjectURL(blob)
@@ -82,8 +105,8 @@ export default function Documentation() {
         return <article className={`docs-report-card${generated === option.kind ? ' selected' : ''}`} key={option.kind}>
           <span className={`docs-report-icon ${option.kind}`}><Icon size={19} /></span>
           <div className="docs-report-copy"><h2>{option.title}</h2><p>{option.description}</p></div>
-          <button type="button" className={generated === option.kind ? 'button button-primary' : 'button button-ghost'} onClick={() => setGenerated(option.kind)} disabled={unavailable || detailLoading}>
-            {detailLoading ? <><LoaderCircle size={15} className="spin" /> Loading…</> : generated === option.kind ? 'Generated' : 'Generate'}
+          <button type="button" className={generated === option.kind ? 'button button-primary' : 'button button-ghost'} onClick={() => generateReportFor(option.kind)} disabled={unavailable || detailLoading || generating}>
+            {detailLoading ? <><LoaderCircle size={15} className="spin" /> Loading…</> : generating ? <><LoaderCircle size={15} className="spin" /> Generating…</> : generated === option.kind ? 'Generated' : 'Generate'}
           </button>
           {unavailable && <small>Available after the project analysis finishes.</small>}
         </article>

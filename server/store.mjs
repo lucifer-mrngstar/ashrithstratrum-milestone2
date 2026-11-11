@@ -8,10 +8,10 @@ import { fileURLToPath } from 'node:url'
 const scrypt = promisify(scryptCb)
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const configuredDbPath = process.env.DB_PATH ?? 'server/data/projectmentor.sqlite'
-// Resolve relative database paths against the project, never the shell's current folder.
 export const databasePath = isAbsolute(configuredDbPath) ? configuredDbPath : resolve(projectRoot, configuredDbPath)
 mkdirSync(dirname(databasePath), { recursive: true })
 export const db = new DatabaseSync(databasePath)
+
 db.exec(`PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -20,18 +20,12 @@ CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY, user_id TEXT NOT NULL U
 CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, student_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE, data TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, status TEXT NOT NULL, data TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS milestone_progress(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, week INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('planned','in-progress','half-done','done')), updated_at TEXT NOT NULL, PRIMARY KEY(project_id,week));
+CREATE TABLE IF NOT EXISTS mentor_messages(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('student','mentor')), text TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reports(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('synopsis','progress','final')), content TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_projects_student ON projects(student_id);
-CREATE INDEX IF NOT EXISTS ix_runs_project ON runs(project_id);`)
-
-// Earlier Sprint 5 builds constrained this table to three statuses. Rebuild it while
-// preserving saved rows so the half-done option works after the backend restarts.
-const milestoneTable = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='milestone_progress'").get()
-if (milestoneTable && !milestoneTable.sql.includes("'half-done'")) {
-  db.exec(`ALTER TABLE milestone_progress RENAME TO milestone_progress_legacy;
-    CREATE TABLE milestone_progress(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, week INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('planned','in-progress','half-done','done')), updated_at TEXT NOT NULL, PRIMARY KEY(project_id,week));
-    INSERT INTO milestone_progress(project_id,week,status,updated_at) SELECT project_id,week,status,updated_at FROM milestone_progress_legacy;
-    DROP TABLE milestone_progress_legacy;`)
-}
+CREATE INDEX IF NOT EXISTS ix_runs_project ON runs(project_id);
+CREATE INDEX IF NOT EXISTS ix_mentor_messages_project ON mentor_messages(project_id, created_at);
+CREATE INDEX IF NOT EXISTS ix_reports_project ON reports(project_id, created_at);`)
 
 const now = () => new Date().toISOString()
 const id = (prefix) => `${prefix}_${randomBytes(16).toString('hex')}`
@@ -123,3 +117,48 @@ export function getRun(user, runId) { const row=db.prepare('SELECT r.data FROM r
 export function requestCancel(user, runId) { return db.prepare('UPDATE runs SET cancel_requested=1 WHERE id=? AND project_id IN (SELECT p.id FROM projects p JOIN profiles s ON s.id=p.student_id WHERE s.user_id=?) AND status IN (\'queued\',\'running\')').run(runId,user.id).changes>0 }
 export function isCancelled(runId) { return Boolean(db.prepare('SELECT cancel_requested FROM runs WHERE id=?').get(runId)?.cancel_requested) }
 export function deleteProject(user, projectId) { return db.prepare('DELETE FROM projects WHERE id=? AND student_id IN (SELECT id FROM profiles WHERE user_id=?)').run(projectId,user.id).changes>0 }
+
+export function saveMentorMessage(user, projectId, role, text) {
+  const project = getProject(user, projectId)
+  if (!project) throw Object.assign(new Error('Project not found.'), { status: 404 })
+  const message = { id: id('msg'), projectId, role, text, createdAt: now() }
+  db.prepare('INSERT INTO mentor_messages(id, project_id, role, text, created_at) VALUES(?, ?, ?, ?, ?)')
+    .run(message.id, message.projectId, message.role, message.text, message.createdAt)
+  return message
+}
+
+export function getMentorMessages(user, projectId) {
+  const project = getProject(user, projectId)
+  if (!project) throw Object.assign(new Error('Project not found.'), { status: 404 })
+  return db.prepare('SELECT id, project_id AS projectId, role, text, created_at AS createdAt FROM mentor_messages WHERE project_id = ? ORDER BY created_at ASC')
+    .all(projectId)
+}
+
+export function saveReport(user, projectId, kind, content) {
+  const project = getProject(user, projectId)
+  if (!project) throw Object.assign(new Error('Project not found.'), { status: 404 })
+  const report = { id: id('rep'), projectId, kind, content, createdAt: now() }
+  db.prepare('INSERT INTO reports(id, project_id, kind, content, created_at) VALUES(?, ?, ?, ?, ?)')
+    .run(report.id, report.projectId, report.kind, report.content, report.createdAt)
+  return report
+}
+
+export function listReports(user, projectId) {
+  const project = getProject(user, projectId)
+  if (!project) throw Object.assign(new Error('Project not found.'), { status: 404 })
+  return db.prepare('SELECT id, project_id AS projectId, kind, content, created_at AS createdAt FROM reports WHERE project_id = ? ORDER BY created_at DESC')
+    .all(projectId)
+}
+
+export function getReport(user, reportId) {
+  const row = db.prepare(`SELECT r.id, r.project_id AS projectId, r.kind, r.content, r.created_at AS createdAt
+    FROM reports r
+    JOIN projects p ON p.id = r.project_id
+    JOIN profiles s ON s.id = p.student_id
+    WHERE r.id = ? AND s.user_id = ?`).get(reportId, user.id)
+  return row ?? null
+}
+
+export function close() {
+  db.close()
+}
