@@ -4,7 +4,8 @@ import { Link } from 'react-router-dom'
 
 export function Brand() {
   return <Link to="/" className="brand" aria-label="Stratum Academic Project Mentor home">
-    <img src="/stratum-s-symbol.png" alt="Stratum S symbol" className="brand-mark"/>
+    <img src="/stratum-s-symbol.png" alt="Stratum S symbol" className="brand-mark light-only"/>
+    <img src="/stratum-s-symbol-dark.png" alt="Stratum S symbol" className="brand-mark dark-only"/>
     <span className="brand-text"><span className="brand-word"><strong>Stratum</strong><svg viewBox="0 0 100 25" aria-hidden="true"><path d="M2 23 C34 2 66 1 86 7" fill="none" stroke="url(#brandArc)" strokeWidth="1.6"/><path d="M91 1 93.3 7.2 100 9.5 93.3 11.8 91 18 88.7 11.8 82 9.5 88.7 7.2Z" fill="#8B72FF"/><defs><linearGradient id="brandArc"><stop stopColor="#42CFFF"/><stop offset="1" stopColor="#7255FF"/></linearGradient></defs></svg></span><small>ACADEMIC PROJECT MENTOR</small></span>
   </Link>
 }

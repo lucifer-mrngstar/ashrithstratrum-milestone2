@@ -150,16 +150,26 @@ main:focus { outline: none; }
 .brand { display: inline-flex; align-items: center; gap: 8px; font-family: "Manrope", var(--font-heading); white-space: nowrap; color: var(--text); }
 .brand-mark { width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; }
 .brand-mark img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.brand-mark.light-only { display: inline-flex; }
+.brand-mark.dark-only { display: none; }
 .brand-text { display: grid; gap: 0; }
 .brand-word { position: relative; display: block; width: max-content; font-family: "Plus Jakarta Sans", "Manrope", var(--font-heading); }
 .brand-text strong { display: block; font: italic 800 25px/.88 "Plus Jakarta Sans", "Manrope", var(--font-heading); letter-spacing: -.05em; }
 .brand-word > svg { position: absolute; width: 66px; height: 17px; right: -12px; top: -8px; overflow: visible; opacity: 0.75; }
 .brand-text small { margin-top: 5px; font: 700 6.5px/1.1 "Manrope", var(--font-body); letter-spacing: .2em; color: var(--text-3); }
 .brand-ai { color: var(--accent-text); }
-.nav-bar { display: flex; align-items: center; gap: 22px; margin-left: auto; }
+/* Dark‑mode tweaks for the logo */
+:root[data-theme="dark"] .brand-mark.light-only { display: none !important; }
+:root[data-theme="dark"] .brand-mark.dark-only { display: inline-flex !important; }
+:root[data-theme="dark"] .brand-text strong { color: #FFFFFF; }
+:root[data-theme="dark"] .brand-word > svg { opacity: 0.8; filter: brightness(1.2); }
+:root[data-theme="dark"] .brand-text small { color: #E0E0E0; }
+.nav-bar { display: flex; align-items: center; gap: 22px; margin-left: auto; padding-right: 4px; }
 .nav-link { font-size: 15px; font-weight: 500; color: var(--text-2); padding: 6px 0; border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; }
 .nav-link:hover { color: var(--text); }
 .nav-link.active { color: var(--accent-text); border-bottom-color: var(--accent); }
+.button.nav-create { margin-right: 4px; }
+.theme-menu-inline { margin-left: 8px; }
 
 .user-menu { position: relative; }
 .user-trigger { display: flex; align-items: center; gap: 8px; padding: 4px 10px 4px 4px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text); font-size: 14px; font-weight: 600; }
